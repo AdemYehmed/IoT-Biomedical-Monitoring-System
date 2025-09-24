@@ -17,6 +17,6 @@ An embedded IoT system to monitor **Heart Rate (BPM)**, **SpO₂**, and **Body T
 - **Web Dashboard** (HTML, CSS, JS, or other stack you used)
 
 ## 📸 Demo
-[![Project demo](./assets/linkedin-demo.jpg)]([https://www.linkedin.com/posts/ademyehmed_stm32-esp32-iot-activity-7324120398562811904-6pKx](https://media.licdn.com/dms/image/v2/D4E22AQENKmn9eIMWIA/feedshare-shrink_800/B4EZaSAr_pGQAk-/0/1746206376978?e=1761782400&v=beta&t=boT44yOoJHwcC2ftUY4BtyUZHfHZhx2J44sYHnQ455M))
+[![Project demo](./assets/linkedin-demo.jpg)](https://media.licdn.com/dms/image/v2/D4E22AQENKmn9eIMWIA/feedshare-shrink_800/B4EZaSAr_pGQAk-/0/1746206376978?e=1761782400&v=beta&t=boT44yOoJHwcC2ftUY4BtyUZHfHZhx2J44sYHnQ455M)
 
 ## 📂 Project Structure
