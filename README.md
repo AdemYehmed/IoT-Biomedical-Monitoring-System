@@ -13,8 +13,8 @@ An embedded IoT system to monitor **Heart Rate (BPM)**, **SpO₂**, and **Body T
 ## 🛠️ Tech Stack
 - **Embedded C** (STM32 & ESP32)
 - **UART Protocol** for STM32–ESP32 communication
-- **ESP-IDF / Arduino IDE**
-- **Web Dashboard** (HTML, CSS, JS, or other stack you used)
+- **ESP-IDE / Arduino IDE**
+- **Web Dashboard** (HTML, CSS, JS)
 
 ## 📸 Demo
 [![Project demo](photo/1746206376978.jpg)
