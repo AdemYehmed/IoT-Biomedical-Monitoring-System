@@ -18,5 +18,3 @@ An embedded IoT system to monitor **Heart Rate (BPM)**, **SpO₂**, and **Body T
 
 ## 📸 Demo
 [![Project demo](photo/1746206376978.jpg)
-
-## 📂 Project Structure
