@@ -1,1 +1,328 @@
+/*
+==========================================================
+  IoT Biomedical Monitoring (ESP32)
+  - Wi-Fi Web Dashboard with auto-refresh & line chart
+  - MAX30105 (IR/Red) for BPM estimation
+  - DS18B20 temperature via OneWire + DallasTemperature
+  - Simple PDF export via browser print
+
+  NOTE:
+  * Logic and behavior preserved exactly as your original.
+  * Only formatting and comments were added for clarity.
+  * Be careful: Wi-Fi credentials are hard-coded for demo.
+
+  Dependencies (Arduino IDE Library Manager):
+  - SparkFun MAX3010x Sensor Library  (MAX30105.h, heartRate.h)
+  - OneWire (Paul Stoffregen)
+  - DallasTemperature (Miles Burton)
+  Board support: esp32 by Espressif Systems
+==========================================================
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <HardwareSerial.h>
+
+// -----------------------------------------------------------------------------
+// UART instance (declared but not used in current logic)
+// -----------------------------------------------------------------------------
+HardwareSerial SerialPort(0);
+
+// -----------------------------------------------------------------------------
+// Wi-Fi credentials (demo only — replace with your own if needed)
+// -----------------------------------------------------------------------------
+const char* ssid     = "Ademm";
+const char* password = "25676360";
+
+// -----------------------------------------------------------------------------
+// Sensors
+// -----------------------------------------------------------------------------
+MAX30105 particleSensor;
+
+#define ONE_WIRE_BUS 4                // DS18B20 on GPIO 4
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// -----------------------------------------------------------------------------
+// Web server on port 80
+// -----------------------------------------------------------------------------
+WebServer server(80);
+
+// -----------------------------------------------------------------------------
+// Patient metadata (static demo data shown on the web page)
+// -----------------------------------------------------------------------------
+String nom         = "Ali Ben Salah";
+int    age         = 27;
+String coordonnees = "Monastir, Tunisie";
+
+// -----------------------------------------------------------------------------
+// Measurements / state
+// -----------------------------------------------------------------------------
+int   bp1 = 0;
+int   i   = 0;
+float bpm = 0;
+float spo2 = 0;
+float temperature = 0;
+
+unsigned long lastBeat   = 0;
+unsigned long lastUpdate = 0;
+
+// -----------------------------------------------------------------------------
+// Small inline PNG (base64) used as an icon in the page
+// -----------------------------------------------------------------------------
+const char* imgBase64 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAIUlEQVQYV2NkYGD4z0AEYBxV"
+  "SFGBgYH4z8DAwMiAIIIEAACGiBN/P+Z95wAAAABJRU5ErkJggg==";
+
+// -----------------------------------------------------------------------------
+// Generates the HTML dashboard (auto-refresh + Chart.js)
+// -----------------------------------------------------------------------------
+String getHTML() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='UTF-8'>
+  <title>Patient Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv='refresh' content='5'>
+  <style>
+    body {
+      font-family: Arial;
+      background: #f0f8ff;
+      color: #333;
+      text-align: center;
+      transition: all 0.3s ease;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #eee; }
+      .card { background: #1e1e1e; }
+    }
+    .card {
+      background: white;
+      border-radius: 15px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+      padding: 20px;
+      max-width: 500px;
+      margin: 50px auto;
+      transition: background 0.3s;
+    }
+    img { width: 100px; }
+    h1 { color: #007acc; }
+    .data { font-size: 1.2em; margin: 10px 0; }
+    button {
+      background-color: #007acc;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class='card' id="card">
+    <div class='data'>🖼️<br><img src=')rawliteral" + String(imgBase64) + R"rawliteral(' alt='heart'/></div>
+    <h1>Surveillance Patient</h1>
+    <div class='data'>👤 <strong>Nom:</strong> )rawliteral" + nom + R"rawliteral(</div>
+    <div class='data'>🎂 <strong>Âge:</strong> )rawliteral" + String(age) + R"rawliteral(</div>
+    <div class='data'>💓 <strong>BPM:</strong> <span id="bpm">)rawliteral" + String(bpm, 1) + R"rawliteral(</span></div>
+    <div class='data'>🩸 <strong>SpO₂:</strong> <span id="spo2">)rawliteral" + String(spo2, 1) + R"rawliteral(</span> %</div>
+    <div class='data'>🌡️ <strong>Température:</strong> <span id="temp">)rawliteral" + String(temperature, 1) + R"rawliteral(</span> °C</div>
+    <div class='data'>📍 <strong>Coordonnées:</strong> )rawliteral" + coordonnees + R"rawliteral(</div>
+    <div class='data' style='font-size:0.9em;color:gray;'>📅 Dernière mise à jour: )rawliteral" + String(millis() / 1000) + R"rawliteral( s</div>
+    <button onclick="exportPDF()">📄 Télécharger PDF</button>
+    <canvas id="chart" width="400" height="200"></canvas>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    // Simple time-series buffers for the line chart
+    let bpmList = [], spo2List = [], tempList = [], labels = [];
+
+    function updateChart() {
+      // Keep only the last 20 points
+      if (bpmList.length > 20) {
+        bpmList.shift(); spo2List.shift(); tempList.shift(); labels.shift();
+      }
+      bpmList.push(parseFloat(document.getElementById("bpm").innerText));
+      spo2List.push(parseFloat(document.getElementById("spo2").innerText));
+      tempList.push(parseFloat(document.getElementById("temp").innerText));
+      labels.push(new Date().toLocaleTimeString());
+
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = bpmList;
+      chart.data.datasets[1].data = spo2List;
+      chart.data.datasets[2].data = tempList;
+      chart.update();
+    }
+
+    // Browser print dialog for "export to PDF"
+    function exportPDF() { window.print(); }
+
+    // Chart.js line chart
+    const ctx = document.getElementById('chart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: '💓 BPM',     data: [], borderColor: 'red',   fill: false },
+          { label: '🩸 SpO₂ %',  data: [], borderColor: 'blue',  fill: false },
+          { label: '🌡️ °C',     data: [], borderColor: 'green', fill: false }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'top' } },
+        scales: { y: { beginAtZero: false } }
+      }
+    });
+
+    // Update the chart every refresh cycle
+    setInterval(updateChart, 5000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+  return html;
+}
+
+// -----------------------------------------------------------------------------
+// Reads two bytes from Serial and reassembles a signed 16-bit value.
+// NOTE: Returns nothing if fewer than 2 bytes are available (original logic).
+// -----------------------------------------------------------------------------
+int read_temp(void) {
+  if (Serial.available() >= 2) {
+    uint8_t  highByte = Serial.read();
+    uint8_t  lowByte  = Serial.read();
+    int16_t  valeur   = (highByte << 8) | lowByte;   // Reconstituer l'entier
+    return valeur;
+  }
+  // No explicit return to preserve original behavior.
+}
+
+// -----------------------------------------------------------------------------
+// Setup: Serial, Wi-Fi, MAX30105, DS18B20, Web route
+// -----------------------------------------------------------------------------
+void setup() {
+  // UART to match STM32 baud rate for inter-MCU comms
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+
+  // Wi-Fi connection
+  Serial.println("Connexion au WiFi...");
+  WiFi.begin(ssid, password);
+
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 20) {
+    delay(500);
+    Serial.print(".");
+    tries++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nImpossible de se connecter au WiFi !");
+    return;
+  }
+
+  Serial.println("\nConnecté !");
+  Serial.print("IP locale : ");
+  Serial.println(WiFi.localIP());
+
+  // MAX30102/30105 init (I2C)
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("MAX30102 non détecté !");
+    while (1); // Halt if not found (original behavior)
+  }
+
+  // LED / sample settings (as in original)
+  particleSensor.setup(60, 4, 2, 100, 411, 4096);
+  particleSensor.setPulseAmplitudeRed(0x0A);
+  particleSensor.setPulseAmplitudeIR(0x0A);
+
+  // DS18B20 init
+  sensors.begin();
+
+  // HTTP route: serves the generated HTML dashboard
+  server.on("/", []() {
+    server.send(200, "text/html", getHTML());
+  });
+
+  server.begin();
+}
+
+// -----------------------------------------------------------------------------
+// Loop: Handle HTTP clients, poll sensors, compute simple BPM/SpO2,
+//        stream integers via UART, update lastUpdate.
+// -----------------------------------------------------------------------------
+void loop() {
+  server.handleClient();
+
+  long irValue  = particleSensor.getIR();
+  long redValue = particleSensor.getRed();
+
+  // -----------------------------------------------------------
+  // BPM computation (threshold-based, simplified)
+  // -----------------------------------------------------------
+  if (irValue > 15000) {
+    i = 0;
+    int irValue1 = irValue;
+    lastBeat = millis();
+    delay(20);
+
+    while (i < 100) {
+      irValue = particleSensor.getIR();
+
+      if (irValue > 15000 && irValue < irValue1) {
+        long  delta           = millis() - lastBeat;
+        float beatsPerMinute  = 60 / (delta / 1000.0);
+
+        if (beatsPerMinute > 20 && beatsPerMinute < 220) {
+          bpm = beatsPerMinute;
+        }
+        break;
+      }
+      delay(10);
+      i++;
+    }
+  }
+
+  bp1 = bpm;
+
+  // -----------------------------------------------------------
+  // SpO2 (very rough heuristic based on Red/IR difference)
+  // -----------------------------------------------------------
+  if (redValue > 10000 && irValue > 10000) {
+    spo2 = 100.0 - abs(redValue - irValue) * 0.001;
+  }
+
+  // -----------------------------------------------------------
+  // Stream integers over UART (original protocol)
+  // - Send BPM offset by +2000 as 4 bytes
+  // - Send SpO2 offset by +1000 as 4 bytes
+  // -----------------------------------------------------------
+  int bp2 = bp1 + 2000;
+  Serial.write((uint8_t*)&bp2, sizeof(bp2));
+  delay(500);
+
+  int spo = spo2 + 1000;
+  Serial.write((uint8_t*)&spo, sizeof(spo));
+  delay(100);
+
+  // -----------------------------------------------------------
+  // Temperature: read 16-bit value from Serial (STM32 side)
+  // -----------------------------------------------------------
+  temperature = read_temp();
+
+  lastUpdate = millis();
+  delay(1000);
+}
 
